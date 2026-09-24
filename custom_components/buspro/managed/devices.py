@@ -11,7 +11,6 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from ..const import (
     CONF_CHANNEL_COUNT,
     CONF_CHANNELS,
-    CONF_DEVICE_TYPE,
     CONF_MANAGED_DEVICES,
     CONF_MODEL,
     DEVICE_TYPE_AC,
@@ -20,18 +19,20 @@ from ..const import (
     DEVICE_TYPE_DRY_CONTACT,
     DEVICE_TYPE_FAN,
     DEVICE_TYPE_FLOOR_HEATING,
+    DEVICE_TYPE_MIXED_OUTPUT,
     DEVICE_TYPE_MULTISENSOR,
     DEVICE_TYPE_RELAY,
     DEVICE_TYPE_UNIVERSAL_SWITCH,
     DOMAIN,
 )
-from .logic import build_channel_records
+from .logic import build_channel_records, models_for_device_type
 from ..catalog import DEVICE_CATALOG
 
 
 DEVICE_TYPE_LABELS = {
     DEVICE_TYPE_RELAY: "Relay",
     DEVICE_TYPE_DIMMER: "Dimmer",
+    DEVICE_TYPE_MIXED_OUTPUT: "Mixed dimmer / relay module",
     DEVICE_TYPE_DRY_CONTACT: "Dry contact module",
     DEVICE_TYPE_MULTISENSOR: "Multisensor / panel sensor",
     DEVICE_TYPE_FLOOR_HEATING: "Floor heating module",
@@ -43,11 +44,7 @@ DEVICE_TYPE_LABELS = {
 
 def models_for_type(device_type: str) -> list[str]:
     """Return models supported by a UI device type."""
-    return [
-        model
-        for model, spec in DEVICE_CATALOG.items()
-        if spec.get(CONF_DEVICE_TYPE) == device_type
-    ]
+    return models_for_device_type(DEVICE_CATALOG, device_type)
 
 
 def managed_devices(config_entry) -> list[dict]:
@@ -73,6 +70,7 @@ def build_channels(
     channel_keys: list[int | str],
     names: dict[int | str, str] | None = None,
     existing_channels: dict[int | str, dict] | None = None,
+    channel_types: dict[int | str, str] | None = None,
 ) -> list[dict]:
     """Build serializable channel definitions."""
     return build_channel_records(
@@ -82,6 +80,7 @@ def build_channels(
         channel_keys,
         names,
         existing_channels,
+        channel_types,
     )
 
 

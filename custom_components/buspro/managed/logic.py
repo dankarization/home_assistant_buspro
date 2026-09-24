@@ -28,6 +28,15 @@ def fixed_channel_count(device_catalog, model):
     return int(spec["channels"])
 
 
+def models_for_device_type(device_catalog, device_type):
+    """Return catalog models exposed by one GUI device-type choice."""
+    return [
+        model
+        for model, spec in device_catalog.items()
+        if spec.get("device_type") == device_type
+    ]
+
+
 def is_channel_configured(name):
     """Return whether a channel name opts the channel into runtime setup."""
     return bool((name or "").strip())
@@ -38,6 +47,21 @@ def is_runtime_channel(channel):
     return bool(channel.get("enabled", True))
 
 
+def channel_device_type(device_type, channel):
+    """Return a channel's platform type, falling back to its parent device."""
+    return channel.get("device_type", device_type)
+
+
+def channels_for_device_type(device, device_type):
+    """Return channels routed to a Home Assistant platform type."""
+    parent_type = device["device_type"]
+    return [
+        channel
+        for channel in device.get("channels", ())
+        if channel_device_type(parent_type, channel) == device_type
+    ]
+
+
 def build_channel_records(
     domain,
     address,
@@ -45,30 +69,34 @@ def build_channel_records(
     channel_keys,
     names=None,
     existing_channels=None,
+    channel_types=None,
 ):
     """Build channels while preserving existing registry identities."""
     names = names or {}
     existing_channels = existing_channels or {}
+    channel_types = channel_types or {}
     address_part = address.replace(".", "_")
     records = []
     for channel in channel_keys:
         name = names.get(channel, "")
         channel_part = str(channel).replace("-", "_")
         existing = existing_channels.get(channel, {})
-        records.append(
-            {
-                "number": channel,
-                "name": name,
-                "enabled": is_channel_configured(name),
-                "object_id": existing.get(
-                    "object_id",
-                    f"hdl_buspro_{device_type}_{address_part}_{channel_part}",
-                ),
-                "unique_id": existing.get(
-                    "unique_id", f"{domain}-{address}-{device_type}-{channel}"
-                ),
-            }
-        )
+        effective_type = channel_types.get(channel, device_type)
+        record = {
+            "number": channel,
+            "name": name,
+            "enabled": is_channel_configured(name),
+            "object_id": existing.get(
+                "object_id",
+                f"hdl_buspro_{effective_type}_{address_part}_{channel_part}",
+            ),
+            "unique_id": existing.get(
+                "unique_id", f"{domain}-{address}-{effective_type}-{channel}"
+            ),
+        }
+        if channel in channel_types:
+            record["device_type"] = effective_type
+        records.append(record)
     return records
 
 

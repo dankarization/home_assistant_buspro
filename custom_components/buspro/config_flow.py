@@ -837,6 +837,7 @@ class BusproOptionsFlow(config_entries.OptionsFlow):
                 channel_keys,
                 names,
                 existing,
+                spec.get("channel_types"),
             )
             devices = managed_devices(self._config_entry)
             if self._editing_address is None:

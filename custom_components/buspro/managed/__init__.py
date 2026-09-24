@@ -11,10 +11,12 @@ from .devices import (
 )
 from .logic import (
     build_channel_records,
+    channels_for_device_type,
     fixed_channel_count,
     is_channel_configured,
     is_runtime_channel,
     managed_unique_ids,
+    models_for_device_type,
     registry_disabled_update,
     removed_managed_unique_ids,
 )

@@ -21,10 +21,7 @@ from .helpers.entity import (
     device_info_for_address,
 )
 from .const import (
-    CONF_CHANNELS,
-    CONF_CHANNEL_ENABLED,
     CONF_CHANNEL_NUMBER,
-    CONF_DEVICE_TYPE,
     CONF_MANAGED_DEVICES,
     DATA_BUSPRO_CONFIG,
     DEVICE_TYPE_RELAY,
@@ -36,7 +33,12 @@ from .const import (
     DEFAULT_CONFIRMATION_TIMEOUT,
     DEFAULT_CONFIRMATION_RETRIES,
 )
-from .managed import managed_device_info, is_runtime_channel, registry_disabled_update
+from .managed import (
+    channels_for_device_type,
+    is_runtime_channel,
+    managed_device_info,
+    registry_disabled_update,
+)
 from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
@@ -120,11 +122,11 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entities = []
     relay_modules = {}
     for device_config in config_entry.options.get(CONF_MANAGED_DEVICES, []):
-        if device_config[CONF_DEVICE_TYPE] != DEVICE_TYPE_RELAY:
-            continue
         address = tuple(int(part) for part in device_config["address"].split("."))
         info = managed_device_info(device_config)
-        for channel in device_config[CONF_CHANNELS]:
+        for channel in channels_for_device_type(
+            device_config, DEVICE_TYPE_RELAY
+        ):
             channel_enabled = is_runtime_channel(channel)
             runtime_enabled = _sync_registry_enabled_state(
                 entity_registry,

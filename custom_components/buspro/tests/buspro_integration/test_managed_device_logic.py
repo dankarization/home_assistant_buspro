@@ -17,6 +17,7 @@ sys.modules[spec.name] = _module
 spec.loader.exec_module(_module)
 
 build_channel_records = _module.build_channel_records
+channels_for_device_type = _module.channels_for_device_type
 fixed_channel_count = _module.fixed_channel_count
 is_channel_configured = _module.is_channel_configured
 is_runtime_channel = _module.is_runtime_channel
@@ -96,6 +97,74 @@ class ManagedDeviceLogicTest(unittest.TestCase):
         self.assertEqual(
             registry_disabled_update(True, "user"), (False, "user")
         )
+
+    def test_mixed_output_channels_split_by_platform_and_round_trip(self):
+        channel_types = {
+            **{channel: "dimmer" for channel in (1, 2)},
+            **{channel: "relay" for channel in range(3, 13)},
+        }
+        names = {
+            channel: "" if channel in (2, 10, 12) else f"Output {channel}"
+            for channel in range(1, 13)
+        }
+
+        channels = build_channel_records(
+            "buspro",
+            "1.3",
+            "mixed_output",
+            list(range(1, 13)),
+            names,
+            channel_types=channel_types,
+        )
+        device = {"device_type": "mixed_output", "channels": channels}
+
+        self.assertEqual(
+            [item["number"] for item in channels_for_device_type(device, "dimmer")],
+            [1, 2],
+        )
+        self.assertEqual(
+            [item["number"] for item in channels_for_device_type(device, "relay")],
+            list(range(3, 13)),
+        )
+        self.assertEqual(
+            [item["number"] for item in channels if not is_runtime_channel(item)],
+            [2, 10, 12],
+        )
+        self.assertEqual(channels[0]["unique_id"], "buspro-1.3-dimmer-1")
+        self.assertEqual(channels[2]["unique_id"], "buspro-1.3-relay-3")
+
+        existing = {item["number"]: item for item in channels}
+        renamed = dict(names)
+        renamed[1] = "Renamed output"
+        rebuilt = build_channel_records(
+            "buspro",
+            "1.3",
+            "mixed_output",
+            list(range(1, 13)),
+            renamed,
+            existing,
+            channel_types,
+        )
+
+        self.assertEqual(len(rebuilt), 12)
+        self.assertEqual(
+            [(item["object_id"], item["unique_id"]) for item in rebuilt],
+            [(item["object_id"], item["unique_id"]) for item in channels],
+        )
+        self.assertEqual(
+            [item["device_type"] for item in rebuilt],
+            ["dimmer", "dimmer"] + ["relay"] * 10,
+        )
+        self.assertFalse(rebuilt[1]["enabled"])
+        self.assertFalse(rebuilt[9]["enabled"])
+        self.assertFalse(rebuilt[11]["enabled"])
+
+    def test_platform_routing_preserves_legacy_parent_device_types(self):
+        channels = [{"number": 1}, {"number": 2}]
+        device = {"device_type": "relay", "channels": channels}
+
+        self.assertEqual(channels_for_device_type(device, "relay"), channels)
+        self.assertEqual(channels_for_device_type(device, "dimmer"), [])
 
 
 if __name__ == "__main__":

@@ -221,6 +221,7 @@
       "options": {
         "relay": "Relay",
         "dimmer": "Dimmer",
+        "mixed_output": "Mixed dimmer / relay module",
         "dry_contact": "Dry contact module",
         "multisensor": "Multisensor / panel sensor",
         "floor_heating": "Floor heating module",

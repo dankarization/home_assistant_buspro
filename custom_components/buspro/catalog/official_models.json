@@ -1,5 +1,5 @@
 {
-  "updated": "2026-08-13",
+  "updated": "2026-09-24",
   "sources": [
     "https://www.hdlaonline.com/eshop/en/products/buspro",
     "https://hdlrus.ru/oborudovanie/oborudovanie-hdl"
@@ -24,6 +24,9 @@
     "HDL-MR0420C.431",
     "HDL-MR0820C.432",
     "HDL-MR1220C.433",
+
+    "HDL-MHIOU.432",
+    "HDL-MHIOU-II.432",
 
     "HDL-MD0206.432",
     "HDL-MD0403.432",

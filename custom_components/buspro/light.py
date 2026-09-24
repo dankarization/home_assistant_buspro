@@ -23,6 +23,8 @@ from homeassistant.components.light import (
 )
 from homeassistant.const import (CONF_NAME, CONF_DEVICES)
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import generate_entity_id
 from homeassistant.helpers.restore_state import (
     ExtraStoredData,
@@ -33,12 +35,12 @@ from homeassistant.helpers.restore_state import (
 from ..buspro import DATA_BUSPRO
 from .helpers.entity import attach_entity_to_physical_device, device_info_for_address
 from .const import (
-    CONF_CHANNELS,
     CONF_CHANNEL_NUMBER,
     CONF_DEVICE_TYPE,
     CONF_MANAGED_DEVICES,
     DATA_BUSPRO_CONFIG,
     DEVICE_TYPE_DIMMER,
+    DOMAIN,
     CONF_ENABLE_CONFIRMATION,
     CONF_CONFIRMATION_TIMEOUT,
     CONF_CONFIRMATION_RETRIES,
@@ -46,7 +48,12 @@ from .const import (
     DEFAULT_CONFIRMATION_TIMEOUT,
     DEFAULT_CONFIRMATION_RETRIES,
 )
-from .managed import managed_device_info
+from .managed import (
+    channels_for_device_type,
+    is_runtime_channel,
+    managed_device_info,
+    registry_disabled_update,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -158,13 +165,24 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     from .pybuspro.devices import Light
 
     module = hass.data[DATA_BUSPRO_CONFIG]["entry_modules"][config_entry.entry_id]
+    entity_registry = er.async_get(hass)
     entities = []
     for device_config in config_entry.options.get(CONF_MANAGED_DEVICES, []):
-        if device_config[CONF_DEVICE_TYPE] != DEVICE_TYPE_DIMMER:
-            continue
         address = tuple(int(part) for part in device_config["address"].split("."))
         info = managed_device_info(device_config)
-        for channel in device_config[CONF_CHANNELS]:
+        for channel in channels_for_device_type(
+            device_config, DEVICE_TYPE_DIMMER
+        ):
+            channel_enabled = True
+            if CONF_DEVICE_TYPE in channel:
+                channel_enabled = is_runtime_channel(channel)
+                runtime_enabled = _sync_registry_enabled_state(
+                    entity_registry,
+                    channel[CONF_UNIQUE_ID],
+                    channel_enabled,
+                )
+                if not runtime_enabled and channel_enabled:
+                    continue
             device = Light(
                 module.hdl,
                 address,
@@ -181,9 +199,32 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     channel[CONF_UNIQUE_ID],
                     device_info=info,
                     module=module,
+                    channel_enabled=channel_enabled,
                 )
             )
     async_add_entities(entities)
+
+
+def _sync_registry_enabled_state(entity_registry, unique_id, channel_enabled):
+    """Disable empty managed channels and re-enable configured channels."""
+    entity_id = entity_registry.async_get_entity_id("light", DOMAIN, unique_id)
+    if entity_id is None:
+        return channel_enabled
+
+    entry = entity_registry.async_get(entity_id)
+    should_update, disabled_by = registry_disabled_update(
+        channel_enabled, entry.disabled_by
+    )
+    if should_update:
+        entry = entity_registry.async_update_entity(
+            entity_id,
+            disabled_by=(
+                er.RegistryEntryDisabler.INTEGRATION
+                if disabled_by == "integration"
+                else None
+            ),
+        )
+    return channel_enabled and entry.disabled_by is None
 
 
 # noinspection PyAbstractClass
@@ -200,6 +241,7 @@ class BusproLight(RestoreEntity, LightEntity):
         unique_id=None,
         device_info=None,
         module=None,
+        channel_enabled=True,
     ):
         self._hass = hass
         self._device = device
@@ -208,6 +250,8 @@ class BusproLight(RestoreEntity, LightEntity):
         self._dimmable = dimmable
         self._object_id = object_id
         self._configured_unique_id = unique_id
+        self._channel_enabled = channel_enabled
+        self._attr_entity_registry_enabled_default = channel_enabled
         self._attr_device_info = device_info or device_info_for_address(
             hass, device.device_address
         )
@@ -268,10 +312,11 @@ class BusproLight(RestoreEntity, LightEntity):
     @property
     def available(self):
         """Return True if entity is available."""
-        return bool(
+        connected = bool(
             self._module.connected if self._module is not None
             else self._hass.data[DATA_BUSPRO].connected
         )
+        return self._channel_enabled and connected
 
     @property
     def brightness(self):
@@ -335,6 +380,8 @@ class BusproLight(RestoreEntity, LightEntity):
 
     async def async_turn_on(self, **kwargs):
         """Instruct the light to turn on."""
+        if not self._channel_enabled:
+            raise HomeAssistantError("Buspro channel is not configured")
         has_explicit_brightness = ATTR_BRIGHTNESS in kwargs
         if has_explicit_brightness:
             # Round rather than truncate, and never let an explicit on-request
@@ -357,6 +404,8 @@ class BusproLight(RestoreEntity, LightEntity):
 
     async def async_turn_off(self, **kwargs):
         """Instruct the light to turn off."""
+        if not self._channel_enabled:
+            raise HomeAssistantError("Buspro channel is not configured")
         running_time = self._transition_seconds(kwargs)
         self._optimistic_brightness = 0
         self._optimistic_timeout = time.time() + max(2.0, running_time + 2.0)

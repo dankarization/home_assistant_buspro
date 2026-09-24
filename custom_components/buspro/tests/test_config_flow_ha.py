@@ -1,18 +1,24 @@
 import asyncio
 import unittest
+from types import SimpleNamespace
 
 from tests.bootstrap import ensure_homeassistant_stubs
 
 ensure_homeassistant_stubs()
 
+from homeassistant.const import CONF_ADDRESS, CONF_MODEL, CONF_NAME
+
 from custom_components.buspro import config_flow as cf
 from custom_components.buspro.const import (
+    CONF_DEVICE_TYPE,
     CONF_HOST,
+    CONF_MANAGED_DEVICES,
     CONF_PORT,
     CONF_SEND_PORT,
     CONF_RECEIVE_PORT,
     CONF_CLIENT_ADDRESS,
     DEFAULT_CLIENT_ADDRESS,
+    DEVICE_TYPE_MIXED_OUTPUT,
 )
 
 _VALID_INPUT = {
@@ -56,6 +62,7 @@ class _FakeConfigEntries:
 class _FakeHass:
     def __init__(self):
         self.loop = asyncio.get_running_loop()
+        self.config = SimpleNamespace(language='en')
         self.config_entries = _FakeConfigEntries()
         self.existing_unique_ids = set()
 
@@ -110,6 +117,68 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result['type'], 'menu')
         self.assertIn('gateway', result['menu_options'])
+
+    async def test_mhiou_mixed_output_options_flow(self):
+        entry = _FakeEntry(
+            data={CONF_HOST: '1.1.1.1', CONF_PORT: 6000},
+            options={},
+        )
+        flow = cf.BusproOptionsFlow(entry)
+        flow.hass = _FakeHass()
+
+        original_schema = cf.vol.Schema
+        original_select = cf.selector.SelectSelector
+        had_select_mode = hasattr(cf.selector, 'SelectSelectorMode')
+        original_select_mode = getattr(cf.selector, 'SelectSelectorMode', None)
+        cf.vol.Schema = lambda value, *args, **kwargs: value
+        cf.selector.SelectSelector = lambda config=None: config
+        cf.selector.SelectSelectorMode = SimpleNamespace(DROPDOWN='dropdown')
+        try:
+            add_result = await flow.async_step_add_device()
+            device_type_selector = add_result['data_schema'][CONF_DEVICE_TYPE]
+            self.assertIn(
+                DEVICE_TYPE_MIXED_OUTPUT,
+                device_type_selector['options'],
+            )
+
+            details_result = await flow.async_step_add_device(
+                {CONF_DEVICE_TYPE: DEVICE_TYPE_MIXED_OUTPUT}
+            )
+            model_selector = details_result['data_schema'][CONF_MODEL]
+            self.assertEqual(
+                model_selector['options'],
+                ['HDL-MHIOU.432', 'HDL-MHIOU-II.432'],
+            )
+
+            channels_result = await flow.async_step_device_details({
+                CONF_ADDRESS: '1.2',
+                CONF_NAME: 'Mixed output module',
+                CONF_MODEL: 'HDL-MHIOU.432',
+            })
+            self.assertEqual(channels_result['step_id'], 'device_channels')
+            self.assertEqual(
+                set(channels_result['data_schema']),
+                {f'channel_{channel}' for channel in range(1, 13)},
+            )
+
+            saved_result = await flow.async_step_device_channels({
+                f'channel_{channel}': f'Output {channel}'
+                for channel in range(1, 13)
+            })
+            device = saved_result['data'][CONF_MANAGED_DEVICES][0]
+            self.assertEqual(device[CONF_MODEL], 'HDL-MHIOU.432')
+            self.assertEqual(len(device['channels']), 12)
+            self.assertEqual(
+                [channel[CONF_DEVICE_TYPE] for channel in device['channels']],
+                ['dimmer', 'dimmer'] + ['relay'] * 10,
+            )
+        finally:
+            cf.vol.Schema = original_schema
+            cf.selector.SelectSelector = original_select
+            if had_select_mode:
+                cf.selector.SelectSelectorMode = original_select_mode
+            else:
+                del cf.selector.SelectSelectorMode
 
     async def test_options_flow_gateway_saves_data(self):
         async def ok_validate(hass, data, probe_socket=True):

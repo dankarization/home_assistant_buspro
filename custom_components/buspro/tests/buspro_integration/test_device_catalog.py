@@ -38,6 +38,13 @@ def _make_package(module_name, dir_path):
 # 1. const (needed by catalog sub-modules via `from ..const import ...`)
 _load_module(f"{PACKAGE}.const", BUSPRO_PATH / "const.py")
 
+# Pure managed-device helpers used to verify GUI model filtering.
+_make_package(f"{PACKAGE}.managed", BUSPRO_PATH / "managed")
+managed_logic_module = _load_module(
+    f"{PACKAGE}.managed.logic", BUSPRO_PATH / "managed" / "logic.py"
+)
+models_for_device_type = managed_logic_module.models_for_device_type
+
 # 2. yaml_compat package stub + normalization (needed by catalog.model_notes)
 _make_package(f"{PACKAGE}.yaml_compat", BUSPRO_PATH / "yaml_compat")
 _load_module(
@@ -49,7 +56,16 @@ _load_module(
 _make_package(f"{PACKAGE}.catalog", BUSPRO_PATH / "catalog")
 
 # 4. catalog sub-modules (relative imports resolved via sys.modules entries above)
-for _sub in ("climate", "dimmer", "infrastructure", "output", "panel", "relay", "sensor"):
+for _sub in (
+    "climate",
+    "dimmer",
+    "infrastructure",
+    "mixed_output",
+    "output",
+    "panel",
+    "relay",
+    "sensor",
+):
     _load_module(f"{PACKAGE}.catalog.{_sub}", BUSPRO_PATH / "catalog" / f"{_sub}.py")
 
 _load_module(f"{PACKAGE}.catalog.model_notes", BUSPRO_PATH / "catalog" / "model_notes.py")
@@ -94,6 +110,18 @@ class DeviceCatalogTest(unittest.TestCase):
         self.assertEqual(DEVICE_CATALOG["HDL-MDT06015.533"]["channels"], 6)
         self.assertEqual(DEVICE_CATALOG["HDL-MRDA0610.432"]["channels"], 6)
         self.assertEqual(DEVICE_CATALOG["HDL-MRDA0610.433"]["channels"], 6)
+
+    def test_mhiou_models_are_gui_selectable_mixed_outputs(self):
+        models = set(models_for_device_type(DEVICE_CATALOG, "mixed_output"))
+        self.assertEqual(models, {"HDL-MHIOU.432", "HDL-MHIOU-II.432"})
+
+        for model in models:
+            spec = DEVICE_CATALOG[model]
+            self.assertEqual(spec["channels"], 12)
+            self.assertEqual(
+                [spec["channel_types"][channel] for channel in range(1, 13)],
+                ["dimmer", "dimmer"] + ["relay"] * 10,
+            )
 
     def test_generic_outputs_allow_user_selected_channel_count(self):
         self.assertTrue(

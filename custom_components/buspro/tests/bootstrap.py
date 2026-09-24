@@ -82,7 +82,7 @@ def ensure_homeassistant_stubs():
         def async_create_entry(self, title, data):
             return {'type': 'create_entry', 'title': title, 'data': data}
 
-        def async_show_form(self, step_id, data_schema=None, errors=None):
+        def async_show_form(self, step_id, data_schema=None, errors=None, **kwargs):
             return {'type': 'form', 'step_id': step_id, 'data_schema': data_schema, 'errors': errors or {}}
 
         def async_show_menu(self, step_id, menu_options=None):
