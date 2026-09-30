@@ -19,6 +19,7 @@ from custom_components.buspro.const import (
     CONF_CLIENT_ADDRESS,
     DEFAULT_CLIENT_ADDRESS,
     DEVICE_TYPE_MIXED_OUTPUT,
+    DEVICE_TYPE_MULTISENSOR,
 )
 
 _VALID_INPUT = {
@@ -172,6 +173,49 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
                 [channel[CONF_DEVICE_TYPE] for channel in device['channels']],
                 ['dimmer', 'dimmer'] + ['relay'] * 10,
             )
+        finally:
+            cf.vol.Schema = original_schema
+            cf.selector.SelectSelector = original_select
+            if had_select_mode:
+                cf.selector.SelectSelectorMode = original_select_mode
+            else:
+                del cf.selector.SelectSelectorMode
+
+    async def test_mp8b_options_flow_has_no_sensor_channels(self):
+        entry = _FakeEntry(
+            data={CONF_HOST: '1.1.1.1', CONF_PORT: 6000},
+            options={},
+        )
+        flow = cf.BusproOptionsFlow(entry)
+        flow.hass = _FakeHass()
+
+        original_schema = cf.vol.Schema
+        original_select = cf.selector.SelectSelector
+        had_select_mode = hasattr(cf.selector, 'SelectSelectorMode')
+        original_select_mode = getattr(cf.selector, 'SelectSelectorMode', None)
+        cf.vol.Schema = lambda value, *args, **kwargs: value
+        cf.selector.SelectSelector = lambda config=None: config
+        cf.selector.SelectSelectorMode = SimpleNamespace(DROPDOWN='dropdown')
+        try:
+            await flow.async_step_add_device(
+                {CONF_DEVICE_TYPE: DEVICE_TYPE_MULTISENSOR}
+            )
+            details = await flow.async_step_device_details()
+            self.assertIn('HDL-MP8B.46-A',
+                          details['data_schema'][CONF_MODEL]['options'])
+
+            channels = await flow.async_step_device_details({
+                CONF_ADDRESS: '1.6',
+                CONF_NAME: 'Kitchen wall',
+                CONF_MODEL: 'HDL-MP8B.46-A',
+            })
+            self.assertEqual(channels['step_id'], 'device_channels')
+            self.assertEqual(channels['data_schema'], {})
+
+            saved = await flow.async_step_device_channels({})
+            device = saved['data'][CONF_MANAGED_DEVICES][0]
+            self.assertEqual(device[CONF_MODEL], 'HDL-MP8B.46-A')
+            self.assertEqual(device['channels'], [])
         finally:
             cf.vol.Schema = original_schema
             cf.selector.SelectSelector = original_select

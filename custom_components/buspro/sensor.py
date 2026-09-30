@@ -422,6 +422,8 @@ def _managed_sensor_entities(hass, module, config_entry):
         if device_config[CONF_DEVICE_TYPE] != DEVICE_TYPE_MULTISENSOR:
             continue
         spec = DEVICE_CATALOG[device_config["model"]]
+        if not spec.get("capabilities"):
+            continue
         address = parse_device_address(device_config["address"])
         sensor = module.get_sensor(
             address,

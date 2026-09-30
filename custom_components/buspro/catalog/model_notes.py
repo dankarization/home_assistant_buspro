@@ -8,6 +8,14 @@ from ..yaml_compat.normalization import compact_addresses
 
 
 MODEL_NOTES = {
+    "HDL-MP8B.46-A": {
+        "level": "warning",
+        "note": (
+            "Eight physical buttons are supported. Buspro control telegrams do not "
+            "encode button or press kind; per-button press events require an "
+            "explicit site-verified command map."
+        ),
+    },
     "HDL-MPED4.431": {
         "level": "warning",
         "note": (

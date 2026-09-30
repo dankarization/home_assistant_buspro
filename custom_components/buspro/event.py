@@ -1,5 +1,8 @@
 """Event entities for HDL Buspro button panels."""
 
+import logging
+from pathlib import Path
+
 from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers import device_registry as dr, entity_registry as er
@@ -13,6 +16,9 @@ from .helpers.logic_controller import (
     logic_controller_definitions,
 )
 from .pybuspro.helpers.enums import OperateCode
+from .panel_press import load_press_mappings
+
+_LOGGER = logging.getLogger(__name__)
 
 EVENT_ON = "on"
 EVENT_OFF = "off"
@@ -156,9 +162,31 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up button events for supported catalog and UI-managed panels."""
     module = hass.data[DATA_BUSPRO_CONFIG]["entry_modules"][config_entry.entry_id]
     panels = panel_definitions(hass, config_entry)
+    try:
+        press_mappings = await hass.async_add_executor_job(
+            load_press_mappings,
+            Path(__file__).with_name("panel_press_mappings.json"),
+            DEVICE_CATALOG,
+        )
+    except (OSError, ValueError) as err:
+        _LOGGER.error("Panel press mappings are invalid; no mapped presses will fire: %s", err)
+        press_mappings = {}
+
     entities = []
     for address, (name, button_count, device_info) in panels.items():
         device_address = tuple(int(part) for part in address.split("."))
+        is_mp8b = device_info.get("model") == "HDL-MP8B.46-A"
+        press_map = press_mappings.get(address) if is_mp8b else None
+        if press_map is not None and press_map.model != device_info.get("model"):
+            _LOGGER.warning("Ignoring panel press map for %s: model mismatch", address)
+            press_map = None
+        # MP8B telegrams carry target switch/channel, not a physical button ID.
+        # Expose only buttons with an explicit command fingerprint for this model.
+        button_numbers = (
+            [number for number in range(1, button_count + 1)
+             if press_map is not None and press_map.event_types_for_button(number)]
+            if is_mp8b else range(1, button_count + 1)
+        )
         entities.extend(
             BusproPanelButtonEvent(
                 module.hdl,
@@ -167,8 +195,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 name,
                 button_number,
                 device_info,
+                press_map=press_map,
             )
-            for button_number in range(1, button_count + 1)
+            for button_number in button_numbers
         )
         entities.append(
             BusproPanelActionEvent(
@@ -299,10 +328,14 @@ class BusproPanelButtonEvent(EventEntity):
         device_name,
         button_number,
         device_info,
+        press_map=None,
     ):
         self._buspro = buspro
         self._device_address = device_address
         self._button_number = button_number
+        self._press_map = press_map
+        if press_map is not None:
+            self._attr_event_types = list(press_map.event_types_for_button(button_number))
         self._telegram_cb = self._handle_telegram
         self._attr_name = f"Button {button_number}"
         self._attr_unique_id = f"{DOMAIN}-{address}-button-{button_number}"
@@ -327,10 +360,28 @@ class BusproPanelButtonEvent(EventEntity):
         await super().async_will_remove_from_hass()
 
     def _handle_telegram(self, telegram):
+        if tuple(telegram.source_address or ()) != self._device_address:
+            return
+        if self._press_map is not None:
+            match = self._press_map.match(telegram)
+            if match is None or match[0] != self._button_number:
+                return
+            self._trigger_event(
+                match[1],
+                {
+                    "button_number": self._button_number,
+                    "press_type": match[1],
+                    "source_address": list(self._device_address),
+                    "target_address": list(telegram.target_address or ()),
+                    "raw_payload": list(telegram.payload or ()),
+                },
+            )
+            self.async_write_ha_state()
+            return
+
         payload = telegram.payload or []
         if (
-            tuple(telegram.source_address or ()) != self._device_address
-            or telegram.operate_code != OperateCode.UniversalSwitchControl
+            telegram.operate_code != OperateCode.UniversalSwitchControl
             or len(payload) < 2
             or payload[0] != self._button_number
         ):

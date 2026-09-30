@@ -135,6 +135,9 @@ class DeviceCatalogTest(unittest.TestCase):
             DEVICE_CATALOG["HDL-MS12M.4C"]["profile"], "sensors_in_one"
         )
         self.assertEqual(DEVICE_CATALOG["HDL-MPL8.431"]["button_count"], 8)
+        self.assertEqual(DEVICE_CATALOG["HDL-MP8B.46-A"]["button_count"], 8)
+        self.assertEqual(DEVICE_CATALOG["HDL-MP8B.46-A"]["capabilities"], ())
+        self.assertTrue(DEVICE_CATALOG["HDL-MP8B.46-A"]["panel_actions"])
         self.assertEqual(
             DEVICE_CATALOG["HDL-MPED4.431"]["device_type"], "ac"
         )
