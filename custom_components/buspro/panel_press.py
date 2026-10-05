@@ -1,8 +1,8 @@
 """Explicit, passive panel-command to physical-button event mappings.
 
 Buspro control telegrams contain a source and a target command, but no button
-number or press kind. Only a site-verified, unambiguous command may identify a
-physical press; timing or universal-switch numbers are not button identities.
+number or press kind. A configured, unambiguous target command can identify a
+candidate physical press; timing and trailing command bytes are not identities.
 """
 
 from __future__ import annotations
@@ -37,23 +37,61 @@ class PanelPressMap:
     """A validated lookup for one physical panel."""
 
     model: str
-    commands: dict[tuple[str, tuple[int, int], tuple[int, ...]], tuple[int, str]]
+    commands: dict[
+        tuple[str, tuple[int, int], tuple[int, ...]], tuple[int, int, str]
+    ]
+    button_names: dict[tuple[int, int], str]
 
-    def event_types_for_button(self, button_number: int) -> tuple[str, ...]:
+    def event_types_for_button(self, page: int, button_number: int) -> tuple[str, ...]:
         kinds = {
-            press for button, press in self.commands.values() if button == button_number
+            press for mapped_page, button, press in self.commands.values()
+            if (mapped_page, button) == (page, button_number)
         }
         return tuple(press for press in PRESS_TYPES if press in kinds)
 
-    def match(self, telegram) -> tuple[int, str] | None:
+    def buttons(self) -> tuple[tuple[int, int], ...]:
+        return tuple(sorted({
+            (page, button) for page, button, _ in self.commands.values()
+        }))
+
+    def name_for_button(self, page: int, button: int) -> str:
+        return self.button_names.get((page, button), f"Button {button}")
+
+    def match(self, telegram) -> tuple[int, int, str] | None:
         code = getattr(getattr(telegram, "operate_code", None), "value", None)
         if not isinstance(code, bytes) or len(code) != 2:
             return None
         try:
             target = tuple(telegram.target_address or ())
             payload = tuple(telegram.payload or ())
-            return self.commands.get((code.hex().upper(), target, payload))
-        except TypeError:
+            if len(target) != 2 or not all(
+                type(value) is int and 0 <= value <= 255 for value in target
+            ):
+                return None
+            if not all(
+                type(value) is int and 0 <= value <= 255 for value in payload
+            ):
+                return None
+            code_hex = code.hex().upper()
+            if code_hex == "E01C":
+                if len(payload) == 5 and payload[2:4] == (0, 0):
+                    payload = payload[:2]
+                elif len(payload) != 2:
+                    return None
+            elif code_hex == "0031":
+                if len(payload) == 5:
+                    payload = payload[:4]
+                elif len(payload) != 4:
+                    return None
+            elif code_hex == "0002":
+                if len(payload) != 2:
+                    return None
+            else:
+                return None
+            # The fifth byte's meaning is not verified. A command is a press
+            # only if its source panel and configured target are unambiguous.
+            return self.commands.get((code_hex, target, payload))
+        except (TypeError, ValueError):
             return None
 
 
@@ -71,8 +109,11 @@ def parse_press_mappings(data: dict, catalog: dict) -> dict[str, PanelPressMap]:
         if not isinstance(model, str):
             raise ValueError(f"Invalid panel model at {source}: {model!r}")
         button_count = catalog.get(model, {}).get("button_count", 0)
+        page_count = catalog.get(model, {}).get("page_count", 1)
         if not isinstance(button_count, int) or button_count < 1:
             raise ValueError(f"Unsupported panel model at {source}: {model!r}")
+        if type(page_count) is not int or page_count < 1:
+            raise ValueError(f"Invalid page count for model at {source}: {model!r}")
         actions = panel.get("actions")
         if not isinstance(actions, list):
             raise ValueError(f"Invalid actions at {source}")
@@ -82,24 +123,50 @@ def parse_press_mappings(data: dict, catalog: dict) -> dict[str, PanelPressMap]:
             if not isinstance(action, dict):
                 raise ValueError(f"Invalid action at {source}: {action!r}")
             button = action.get("button")
+            page = action.get("page", 1)
             press = action.get("press")
             code = action.get("operate_code")
             target = _address(action.get("target_address"))
             payload = action.get("payload")
             if type(button) is not int or not 1 <= button <= button_count:
                 raise ValueError(f"Invalid button at {source}: {button!r}")
+            if type(page) is not int or not 1 <= page <= page_count:
+                raise ValueError(f"Invalid page at {source}: {page!r}")
             if press not in PRESS_TYPES:
                 raise ValueError(f"Invalid press kind at {source}: {press!r}")
             if not isinstance(code, str) or code not in CONTROL_CODES:
                 raise ValueError(f"Invalid control code at {source}: {code!r}")
-            if not isinstance(payload, list) or len(payload) != (4 if code == "0031" else 2):
+            if not isinstance(payload, list) or len(payload) != (
+                4 if code == "0031" else 2
+            ):
                 raise ValueError(f"Invalid {code} payload at {source}")
             signature = (code, target, tuple(_byte(value) for value in payload))
             if signature in commands:
                 raise ValueError(f"Ambiguous or duplicate panel command at {source}: {signature}")
-            commands[signature] = (button, press)
+            commands[signature] = (page, button, press)
 
-        result[source] = PanelPressMap(model=model, commands=commands)
+        names = panel.get("button_names", {})
+        if not isinstance(names, dict):
+            raise ValueError(f"Invalid button names at {source}")
+        button_names = {}
+        configured_buttons = {(page, button) for page, button, _ in commands.values()}
+        for key, name in names.items():
+            if not isinstance(key, str) or re.fullmatch(
+                r"[1-9]\d*\.[1-9]\d*", key
+            ) is None:
+                raise ValueError(f"Invalid button name key at {source}: {key!r}")
+            page_button = tuple(int(part) for part in key.split("."))
+            if (
+                page_button not in configured_buttons
+                or not isinstance(name, str)
+                or not name.strip()
+            ):
+                raise ValueError(f"Invalid button name at {source}: {key!r}")
+            button_names[page_button] = name.strip()
+
+        result[source] = PanelPressMap(
+            model=model, commands=commands, button_names=button_names
+        )
     return result
 
 

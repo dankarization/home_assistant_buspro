@@ -175,18 +175,19 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entities = []
     for address, (name, button_count, device_info) in panels.items():
         device_address = tuple(int(part) for part in address.split("."))
-        is_mp8b = device_info.get("model") == "HDL-MP8B.46-A"
-        press_map = press_mappings.get(address) if is_mp8b else None
+        model = device_info.get("model")
+        uses_press_map = model in {"HDL-MP8B.46-A", "HDL-MPL8.46-A"}
+        press_map = press_mappings.get(address) if uses_press_map else None
         if press_map is not None and press_map.model != device_info.get("model"):
             _LOGGER.warning("Ignoring panel press map for %s: model mismatch", address)
             press_map = None
-        # MP8B telegrams carry target switch/channel, not a physical button ID.
-        # Expose only buttons with an explicit command fingerprint for this model.
-        button_numbers = (
-            [number for number in range(1, button_count + 1)
-             if press_map is not None and press_map.event_types_for_button(number)]
-            if is_mp8b else range(1, button_count + 1)
-        )
+        # Mapped models expose only configured, distinguishable page/key pairs.
+        # Unmapped legacy panel behavior and existing entity IDs remain intact.
+        if uses_press_map:
+            buttons = press_map.buttons() if press_map is not None else ()
+        else:
+            buttons = ((1, number) for number in range(1, button_count + 1))
+        paged = DEVICE_CATALOG.get(model, {}).get("page_count", 1) > 1
         entities.extend(
             BusproPanelButtonEvent(
                 module.hdl,
@@ -196,8 +197,10 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 button_number,
                 device_info,
                 press_map=press_map,
+                page=page,
+                paged=paged,
             )
-            for button_number in button_numbers
+            for page, button_number in buttons
         )
         entities.append(
             BusproPanelActionEvent(
@@ -313,7 +316,7 @@ def panel_definitions(hass, config_entry):
 
 
 class BusproPanelButtonEvent(EventEntity):
-    """A panel key configured as a Buspro Universal Switch command."""
+    """A panel key with a configured, distinguishable target command."""
 
     _attr_device_class = EventDeviceClass.BUTTON
     _attr_event_types = [EVENT_ON, EVENT_OFF]
@@ -329,21 +332,36 @@ class BusproPanelButtonEvent(EventEntity):
         button_number,
         device_info,
         press_map=None,
+        page=1,
+        paged=False,
     ):
         self._buspro = buspro
         self._device_address = device_address
         self._button_number = button_number
+        self._page = page
+        self._paged = paged
         self._press_map = press_map
         if press_map is not None:
-            self._attr_event_types = list(press_map.event_types_for_button(button_number))
+            self._attr_event_types = list(
+                press_map.event_types_for_button(page, button_number)
+            )
         self._telegram_cb = self._handle_telegram
-        self._attr_name = f"Button {button_number}"
-        self._attr_unique_id = f"{DOMAIN}-{address}-button-{button_number}"
+        label = (
+            press_map.name_for_button(page, button_number)
+            if press_map is not None else f"Button {button_number}"
+        )
+        self._attr_name = f"Page {page} {label}" if paged else label
+        self._attr_unique_id = (
+            f"{DOMAIN}-{address}-page-{page}-button-{button_number}"
+            if paged else f"{DOMAIN}-{address}-button-{button_number}"
+        )
         self._attr_device_info = device_info
         self._attr_extra_state_attributes = {
             "button_number": button_number,
             "panel_name": device_name,
         }
+        if paged:
+            self._attr_extra_state_attributes["page"] = page
 
     async def async_added_to_hass(self):
         """Subscribe to telegrams involving this physical panel."""
@@ -364,13 +382,15 @@ class BusproPanelButtonEvent(EventEntity):
             return
         if self._press_map is not None:
             match = self._press_map.match(telegram)
-            if match is None or match[0] != self._button_number:
+            if match is None or match[:2] != (self._page, self._button_number):
                 return
+            press_type = match[2]
             self._trigger_event(
-                match[1],
+                press_type,
                 {
                     "button_number": self._button_number,
-                    "press_type": match[1],
+                    **({"page": self._page} if self._paged else {}),
+                    "press_type": press_type,
                     "source_address": list(self._device_address),
                     "target_address": list(telegram.target_address or ()),
                     "raw_payload": list(telegram.payload or ()),

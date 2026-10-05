@@ -13,7 +13,15 @@ MODEL_NOTES = {
         "note": (
             "Eight physical buttons are supported. Buspro control telegrams do not "
             "encode button or press kind; per-button press events require an "
-            "explicit site-verified command map."
+            "explicit site-configured command map and live press validation."
+        ),
+    },
+    "HDL-MPL8.46-A": {
+        "level": "warning",
+        "note": (
+            "Four button pages are supported through explicit site command maps. "
+            "Page/key and press type are inferred from configured commands; "
+            "physical telegrams and panel temperature reporting remain unverified."
         ),
     },
     "HDL-MPED4.431": {

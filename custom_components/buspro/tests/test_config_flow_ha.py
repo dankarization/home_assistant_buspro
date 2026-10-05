@@ -181,7 +181,7 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             else:
                 del cf.selector.SelectSelectorMode
 
-    async def test_mp8b_options_flow_has_no_sensor_channels(self):
+    async def test_panel_options_flow_has_no_unverified_sensor_channels(self):
         entry = _FakeEntry(
             data={CONF_HOST: '1.1.1.1', CONF_PORT: 6000},
             options={},
@@ -203,6 +203,8 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             details = await flow.async_step_device_details()
             self.assertIn('HDL-MP8B.46-A',
                           details['data_schema'][CONF_MODEL]['options'])
+            self.assertIn('HDL-MPL8.46-A',
+                          details['data_schema'][CONF_MODEL]['options'])
 
             channels = await flow.async_step_device_details({
                 CONF_ADDRESS: '1.6',
@@ -215,6 +217,23 @@ class ConfigFlowTests(unittest.IsolatedAsyncioTestCase):
             saved = await flow.async_step_device_channels({})
             device = saved['data'][CONF_MANAGED_DEVICES][0]
             self.assertEqual(device[CONF_MODEL], 'HDL-MP8B.46-A')
+            self.assertEqual(device['channels'], [])
+
+            flow = cf.BusproOptionsFlow(entry)
+            flow.hass = _FakeHass()
+            await flow.async_step_add_device(
+                {CONF_DEVICE_TYPE: DEVICE_TYPE_MULTISENSOR}
+            )
+            channels = await flow.async_step_device_details({
+                CONF_ADDRESS: '1.12',
+                CONF_NAME: 'ENTRY',
+                CONF_MODEL: 'HDL-MPL8.46-A',
+            })
+            self.assertEqual(channels['step_id'], 'device_channels')
+            self.assertEqual(channels['data_schema'], {})
+            saved = await flow.async_step_device_channels({})
+            device = saved['data'][CONF_MANAGED_DEVICES][0]
+            self.assertEqual(device[CONF_MODEL], 'HDL-MPL8.46-A')
             self.assertEqual(device['channels'], [])
         finally:
             cf.vol.Schema = original_schema

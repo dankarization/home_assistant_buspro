@@ -53,7 +53,10 @@ def _load_event_module():
     enums = importlib.util.module_from_spec(enums_spec)
     enums_spec.loader.exec_module(enums)
 
-    catalog = {"HDL-MP8B.46-A": {"panel_actions": True, "button_count": 8}}
+    catalog = {
+        "HDL-MP8B.46-A": {"panel_actions": True, "button_count": 8},
+        "HDL-MPL8.46-A": {"panel_actions": True, "button_count": 8, "page_count": 4},
+    }
     helpers_package = module(f"{prefix}.helpers")
     helpers_package.__path__ = [str(BUSPRO_PATH / "helpers")]
     modules = {
@@ -190,15 +193,73 @@ class PanelEventTest(unittest.IsolatedAsyncioTestCase):
                 operate_code=self.OperateCode.UniversalSwitchControl,
             ))
 
-        receive((1, 6), (1, 99), [20, 255])
-        receive((1, 6), (1, 99), [18, 255])
+        receive((1, 6), (1, 99), [20, 255, 0, 0, 5])
+        receive((1, 6), (1, 99), [18, 255, 0, 0, 5])
         receive((1, 6), (1, 99), [20, 1])
+        receive((1, 6), (1, 98), [20, 255, 0, 0, 6])
         receive((1, 99), (1, 6), [20, 255])
         self.assertEqual(
             [kind for kind, _ in buttons[5].events],
             ["single_press", "long_press"],
         )
         self.assertFalse(hasattr(buttons[6], "events"))
+        self.assertEqual(buttons[5]._attr_unique_id, "buspro-1.6-button-5")
+
+    async def test_paged_panel_entities_are_typed_and_sender_bound(self):
+        self.event._channel_entity = lambda *_: None
+        self.entry.options["managed_devices"] = [{
+            "address": "1.12", "name": "ENTRY",
+            "model": "HDL-MPL8.46-A",
+        }]
+        entities = await self._entities()
+        buttons = {
+            (item._page, item._button_number): item
+            for item in entities
+            if isinstance(item, self.event.BusproPanelButtonEvent)
+        }
+        self.assertEqual(len(buttons), 19)
+        self.assertNotIn((4, 1), buttons)
+        self.assertNotIn((1, 8), buttons)
+        self.assertNotIn((2, 1), buttons)
+        self.assertEqual(buttons[2, 5]._attr_event_types,
+                         ["single_press", "long_press"])
+        self.assertEqual(buttons[3, 3]._attr_event_types, ["single_press"])
+        self.assertEqual(buttons[3, 3]._attr_unique_id,
+                         "buspro-1.12-page-3-button-3")
+        self.assertEqual(buttons[2, 5]._attr_name, "Page 2 Porch UP")
+
+        def receive(source, target, payload, code):
+            self.buspro.receive(SimpleNamespace(
+                source_address=source,
+                target_address=target,
+                payload=payload,
+                operate_code=code,
+            ))
+
+        receive((1, 12), (1, 99), [20, 255, 0, 0, 5],
+                self.OperateCode.UniversalSwitchControl)
+        receive((1, 12), (1, 99), [18, 255, 0, 0, 5],
+                self.OperateCode.UniversalSwitchControl)
+        receive((1, 12), (1, 3), [1, 12, 0, 0, 3],
+                self.OperateCode.SingleChannelControl)
+        receive((1, 12), (1, 3), [1, 0, 0, 0, 3],
+                self.OperateCode.SingleChannelControl)
+        receive((1, 99), (1, 12), [20, 255, 0, 0, 5],
+                self.OperateCode.UniversalSwitchControl)
+        receive((1, 12), (1, 98), [20, 255, 0, 0, 5],
+                self.OperateCode.UniversalSwitchControl)
+        receive((1, 12), (1, 99), [20, 0, 0, 0, 5],
+                self.OperateCode.UniversalSwitchControl)
+        self.assertEqual([kind for kind, _ in buttons[2, 5].events],
+                         ["single_press", "long_press"])
+        self.assertEqual([kind for kind, _ in buttons[3, 3].events],
+                         ["single_press"])
+        self.assertEqual(buttons[3, 3].events[0][1]["page"], 3)
+        self.assertFalse(hasattr(buttons[2, 6], "events"))
+        actions = [item for item in entities
+                   if isinstance(item, self.event.BusproPanelActionEvent)]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(len(actions[0].events), 6)
 
     async def test_seven_panels_expose_nine_mapped_buttons_and_actions(self):
         self.entry.options["managed_devices"] = [
