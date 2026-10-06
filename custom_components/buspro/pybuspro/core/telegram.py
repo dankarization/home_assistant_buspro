@@ -8,6 +8,7 @@ class Telegram:
         self.udp_address = None
         self.payload = None
         self.operate_code = None
+        self.operate_code_bytes = None
         self.source_device_type = DeviceType.PyBusPro
         self.udp_data = None
         self.source_address = None

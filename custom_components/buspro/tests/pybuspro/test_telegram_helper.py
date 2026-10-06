@@ -34,7 +34,17 @@ class TelegramHelperTests(unittest.TestCase):
         self.assertEqual(parsed.source_address, telegram.source_address)
         self.assertEqual(parsed.target_address, telegram.target_address)
         self.assertEqual(parsed.operate_code, telegram.operate_code)
+        self.assertEqual(parsed.operate_code_bytes, telegram.operate_code.value)
         self.assertEqual(parsed.payload, telegram.payload)
+
+    def test_unknown_opcode_keeps_raw_code_after_crc_validation(self):
+        raw = bytearray(self.th.build_send_buffer(self._sample_telegram()))
+        raw[21:23] = b"\xAB\xCD"
+        raw[-2:] = self.th._calculate_crc(raw[16], raw[:-2])
+        parsed = self.th.build_telegram_from_udp_data(raw, ("127.0.0.1", 6000))
+        self.assertIsNotNone(parsed)
+        self.assertIsNone(parsed.operate_code)
+        self.assertEqual(parsed.operate_code_bytes, b"\xAB\xCD")
 
     def test_crc_mismatch_returns_none(self):
         telegram = self._sample_telegram()

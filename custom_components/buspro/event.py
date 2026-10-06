@@ -1,10 +1,12 @@
 """Event entities for HDL Buspro button panels."""
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.const import EntityCategory
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import CONF_MANAGED_DEVICES, DATA_BUSPRO_CONFIG, DOMAIN
@@ -29,6 +31,38 @@ EVENT_SCENE = "scene"
 EVENT_UNIVERSAL_SWITCH_ON = "universal_switch_on"
 EVENT_UNIVERSAL_SWITCH_OFF = "universal_switch_off"
 EVENT_LOGIC_TELEGRAM = "telegram"
+MAX_DIAGNOSTIC_PAYLOAD = 64
+
+
+def _panel_telegram_attributes(telegram, device_address):
+    """Bounded parsed fields only; never expose UDP endpoints or raw frames."""
+    if tuple(telegram.source_address or ()) != device_address:
+        return None
+    target = telegram.target_address
+    payload = telegram.payload
+    if (
+        not isinstance(target, (tuple, list)) or len(target) != 2
+        or not all(type(value) is int and 0 <= value <= 255 for value in target)
+        or not isinstance(payload, (tuple, list))
+        or not all(type(value) is int and 0 <= value <= 255 for value in payload)
+    ):
+        return None
+    code = telegram.operate_code
+    raw_code = getattr(telegram, "operate_code_bytes", None)
+    if raw_code is None:
+        raw_code = getattr(code, "value", None)
+    if not isinstance(raw_code, bytes) or len(raw_code) != 2:
+        return None
+    return {
+        "observed_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        "source_address": ".".join(map(str, device_address)),
+        "target_address": ".".join(map(str, target)),
+        "operate_code": getattr(code, "name", "unknown"),
+        "operate_code_hex": raw_code.hex().upper(),
+        "raw_payload": list(payload[:MAX_DIAGNOSTIC_PAYLOAD]),
+        "payload_length": len(payload),
+        "payload_truncated": len(payload) > MAX_DIAGNOSTIC_PAYLOAD,
+    }
 
 
 def _channel_entity(hass, target_address, channel):
@@ -210,6 +244,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 address,
                 device_info,
             )
+        )
+        entities.append(
+            BusproPanelTelegramEvent(module.hdl, device_address, address, device_info)
         )
 
     for address, device_info in logic_controller_definitions(
@@ -466,6 +503,78 @@ class BusproPanelActionEvent(EventEntity):
             return
         event_type, attributes = decoded
         self._trigger_event(event_type, attributes)
+        self.async_write_ha_state()
+
+
+class BusproPanelTelegramEvent(EventEntity):
+    """Every parsed telegram whose sender is this panel, without action decoding."""
+
+    _attr_event_types = [EVENT_LOGIC_TELEGRAM]
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = True
+    _attr_name = "Telegram"
+    _attr_should_poll = False
+
+    def __init__(self, buspro, device_address, address, device_info):
+        self._buspro = buspro
+        self._device_address = device_address
+        self._telegram_cb = self._handle_telegram
+        self._attr_unique_id = f"{DOMAIN}-{address}-telegram"
+        self._attr_device_info = device_info
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._buspro.register_telegram_received_device_cb(
+            self._telegram_cb, self._device_address
+        )
+
+    async def async_will_remove_from_hass(self):
+        self._buspro.unregister_telegram_received_device_cb(
+            self._telegram_cb, self._device_address
+        )
+        await super().async_will_remove_from_hass()
+
+    def _handle_telegram(self, telegram):
+        attributes = _panel_telegram_attributes(telegram, self._device_address)
+        if attributes is None:
+            return
+        self._trigger_event(EVENT_LOGIC_TELEGRAM, attributes)
+        self.async_write_ha_state()
+
+
+class BusproPanelLastTelegramSensor(SensorEntity):
+    """Timestamp and bounded fields of the latest parsed panel telegram."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = True
+    _attr_name = "Last telegram"
+    _attr_should_poll = False
+
+    def __init__(self, buspro, device_address, address, device_info):
+        self._buspro = buspro
+        self._device_address = device_address
+        self._telegram_cb = self._handle_telegram
+        self._attr_unique_id = f"{DOMAIN}-{address}-last-telegram"
+        self._attr_device_info = device_info
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._buspro.register_telegram_received_device_cb(
+            self._telegram_cb, self._device_address
+        )
+
+    async def async_will_remove_from_hass(self):
+        self._buspro.unregister_telegram_received_device_cb(
+            self._telegram_cb, self._device_address
+        )
+        await super().async_will_remove_from_hass()
+
+    def _handle_telegram(self, telegram):
+        attributes = _panel_telegram_attributes(telegram, self._device_address)
+        if attributes is None:
+            return
+        self._attr_native_value = attributes.pop("observed_at")
+        self._attr_extra_state_attributes = attributes
         self.async_write_ha_state()
 
 

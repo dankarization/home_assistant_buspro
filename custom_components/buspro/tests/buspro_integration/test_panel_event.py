@@ -39,6 +39,9 @@ def _load_event_module():
     class EventDeviceClass:
         BUTTON = "button"
 
+    class EntityCategory:
+        DIAGNOSTIC = "diagnostic"
+
     package = module(prefix)
     package.__path__ = [str(BUSPRO_PATH)]
     pybuspro = module(f"{prefix}.pybuspro")
@@ -97,6 +100,9 @@ def _load_event_module():
         ),
         "homeassistant.components.sensor": module(
             "homeassistant.components.sensor", SensorEntity=SensorEntity
+        ),
+        "homeassistant.const": module(
+            "homeassistant.const", EntityCategory=EntityCategory
         ),
         "homeassistant.helpers": module("homeassistant.helpers"),
         "homeassistant.helpers.device_registry": module(
@@ -272,8 +278,11 @@ class PanelEventTest(unittest.IsolatedAsyncioTestCase):
                    if isinstance(item, self.event.BusproPanelButtonEvent)]
         actions = [item for item in entities
                    if isinstance(item, self.event.BusproPanelActionEvent)]
+        diagnostics = [item for item in entities
+                       if isinstance(item, self.event.BusproPanelTelegramEvent)]
         self.assertEqual(len(buttons), 9)
         self.assertEqual(len(actions), 7)
+        self.assertEqual(len(diagnostics), 7)
 
     async def test_missing_map_never_falls_back_to_uv_number_as_button(self):
         entities = await self._entities(mapping=False)
@@ -285,6 +294,72 @@ class PanelEventTest(unittest.IsolatedAsyncioTestCase):
             isinstance(item, self.event.BusproPanelActionEvent)
             for item in entities
         ))
+        self.assertTrue(any(
+            isinstance(item, self.event.BusproPanelTelegramEvent)
+            for item in entities
+        ))
+
+    async def test_diagnostic_telegram_is_independent_of_action_mapping(self):
+        entities = await self._entities()
+        diagnostic = next(item for item in entities
+                          if isinstance(item, self.event.BusproPanelTelegramEvent))
+        last = self.event.BusproPanelLastTelegramSensor(
+            self.buspro, (1, 6), "1.6", {"model": "HDL-MP8B.46-A"}
+        )
+        await last.async_added_to_hass()
+        action = next(item for item in entities
+                      if isinstance(item, self.event.BusproPanelActionEvent))
+        button = next(item for item in entities
+                      if isinstance(item, self.event.BusproPanelButtonEvent)
+                      and item._button_number == 5)
+        self.assertEqual(diagnostic._attr_unique_id, "buspro-1.6-telegram")
+        self.assertEqual(last._attr_unique_id, "buspro-1.6-last-telegram")
+        self.assertEqual(action._attr_unique_id, "buspro-1.6-action")
+        self.assertEqual(button._attr_unique_id, "buspro-1.6-button-5")
+
+        def receive(source, target, payload, code, raw_code=None):
+            self.buspro.receive(SimpleNamespace(
+                source_address=source, target_address=target, payload=payload,
+                operate_code=code, operate_code_bytes=raw_code,
+                udp_address=("private-gateway", 6000), udp_data=b"private-frame",
+            ))
+
+        # Unknown parsed opcode and unsupported known opcode still reach diagnostics.
+        receive((1, 6), (1, 99), [7, 8], None, b"\xAB\xCD")
+        receive((1, 6), (1, 99), [7, 8],
+                self.OperateCode.ReadStatusOfChannels, b"\x00\x33")
+        self.assertEqual(len(diagnostic.events), 2)
+        self.assertEqual(diagnostic.events[0][0], "telegram")
+        self.assertEqual(diagnostic.events[0][1]["operate_code_hex"], "ABCD")
+        self.assertEqual(diagnostic.events[0][1]["operate_code"], "unknown")
+        self.assertEqual(last._attr_extra_state_attributes["operate_code_hex"], "0033")
+        self.assertFalse(hasattr(action, "events"))
+        self.assertFalse(hasattr(button, "events"))
+
+        # Known action and typed button continue firing unchanged.
+        receive((1, 6), (1, 99), [20, 255, 0, 0, 5],
+                self.OperateCode.UniversalSwitchControl, b"\xE0\x1C")
+        self.assertEqual(len(diagnostic.events), 3)
+        self.assertEqual(len(action.events), 1)
+        self.assertEqual(len(button.events), 1)
+        self.assertEqual(last._attr_extra_state_attributes["raw_payload"],
+                         [20, 255, 0, 0, 5])
+        self.assertRegex(last._attr_native_value,
+                         r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}\+00:00$")
+        self.assertNotIn("private-gateway", str(diagnostic.events))
+        self.assertNotIn("private-frame", str(diagnostic.events))
+
+        # Device-address subscriptions include target traffic; exact sender filter excludes it.
+        receive((1, 99), (1, 6), [1], None, b"\xAB\xCD")
+        self.assertEqual(len(diagnostic.events), 3)
+        self.assertEqual(last._attr_extra_state_attributes["source_address"], "1.6")
+        receive((1, 6), (1, 99), list(range(100)), None, b"\xAB\xCD")
+        bounded = diagnostic.events[-1][1]
+        self.assertEqual(bounded["payload_length"], 100)
+        self.assertEqual(len(bounded["raw_payload"]), 64)
+        self.assertTrue(bounded["payload_truncated"])
+        await last.async_will_remove_from_hass()
+        await diagnostic.async_will_remove_from_hass()
 
 
 if __name__ == "__main__":
