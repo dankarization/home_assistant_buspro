@@ -223,10 +223,8 @@ class PanelEventTest(unittest.IsolatedAsyncioTestCase):
             for item in entities
             if isinstance(item, self.event.BusproPanelButtonEvent)
         }
-        self.assertEqual(len(buttons), 19)
+        self.assertEqual(len(buttons), 24)
         self.assertNotIn((4, 1), buttons)
-        self.assertNotIn((1, 8), buttons)
-        self.assertNotIn((2, 1), buttons)
         self.assertEqual(buttons[2, 5]._attr_event_types,
                          ["single_press", "long_press"])
         self.assertEqual(buttons[3, 3]._attr_event_types, ["single_press"])
@@ -266,6 +264,44 @@ class PanelEventTest(unittest.IsolatedAsyncioTestCase):
                    if isinstance(item, self.event.BusproPanelActionEvent)]
         self.assertEqual(len(actions), 1)
         self.assertEqual(len(actions[0].events), 6)
+
+    async def test_s121_new_keys_have_stable_entities_and_ignore_shared_off(self):
+        self.event._channel_entity = lambda *_: None
+        self.entry.options["managed_devices"] = [{
+            "address": "1.12", "name": "ENTRY",
+            "model": "HDL-MPL8.46-A",
+        }]
+        entities = await self._entities()
+        buttons = {
+            (item._page, item._button_number): item
+            for item in entities
+            if isinstance(item, self.event.BusproPanelButtonEvent)
+        }
+        for (page, button), (name, level) in {
+            (1, 8): ("Master", 14),
+            (2, 1): ("HA 2.1", 15),
+            (2, 2): ("HA 2.2", 16),
+            (2, 3): ("HA 2.3", 17),
+            (2, 4): ("HA 2.4", 18),
+        }.items():
+            with self.subTest(page=page, button=button):
+                entity = buttons[page, button]
+                self.assertEqual(entity._attr_name, f"Page {page} {name}")
+                self.assertEqual(entity._attr_unique_id,
+                                 f"buspro-1.12-page-{page}-button-{button}")
+                self.assertEqual(entity._attr_event_types, ["single_press"])
+                for payload in ([1, level, 0, 0, button], [1, 0, 0, 0, button]):
+                    self.buspro.receive(SimpleNamespace(
+                        source_address=(1, 12), target_address=(1, 3),
+                        payload=payload,
+                        operate_code=self.OperateCode.SingleChannelControl,
+                    ))
+                self.assertEqual([kind for kind, _ in entity.events],
+                                 ["single_press"])
+                self.assertEqual(entity.events[0][1]["raw_payload"],
+                                 [1, level, 0, 0, button])
+        for page_button in ((1, 8), (2, 1), (2, 2), (2, 3), (2, 4)):
+            self.assertEqual(len(buttons[page_button].events), 1)
 
     async def test_seven_panels_expose_nine_mapped_buttons_and_actions(self):
         self.entry.options["managed_devices"] = [

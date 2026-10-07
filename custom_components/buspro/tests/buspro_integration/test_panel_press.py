@@ -33,17 +33,25 @@ class PanelPressMapTest(unittest.TestCase):
         self.assertEqual(
             set(maps), {"1.4", "1.5", "1.6", "1.7", "1.8", "1.10", "1.11", "1.12"}
         )
-        self.assertEqual(sum(len(item.commands) for item in maps.values()), 52)
+        self.assertEqual(sum(len(item.commands) for item in maps.values()), 57)
         self.assertEqual(maps["1.5"].commands, {})
         self.assertEqual(maps["1.6"].event_types_for_button(1, 5),
                          ("single_press", "long_press"))
         self.assertEqual(maps["1.6"].event_types_for_button(1, 1), ())
-        self.assertEqual(len(maps["1.12"].buttons()), 19)
-        self.assertEqual(len(maps["1.12"].button_names), 19)
+        self.assertEqual(len(maps["1.12"].buttons()), 24)
+        self.assertEqual(len(maps["1.12"].button_names), 24)
         for button in range(1, 9):
             self.assertEqual(maps["1.12"].event_types_for_button(4, button), ())
-        self.assertEqual(maps["1.12"].event_types_for_button(1, 8), ())
-        self.assertEqual(maps["1.12"].event_types_for_button(2, 1), ())
+        for page, button, name in (
+            (1, 8, "Master"),
+            (2, 1, "HA 2.1"),
+            (2, 2, "HA 2.2"),
+            (2, 3, "HA 2.3"),
+            (2, 4, "HA 2.4"),
+        ):
+            self.assertEqual(maps["1.12"].event_types_for_button(page, button),
+                             ("single_press",))
+            self.assertEqual(maps["1.12"].name_for_button(page, button), name)
         self.assertEqual(maps["1.12"].name_for_button(2, 5), "Porch UP")
         self.assertNotIn("double_press", {
             press for panel in maps.values() for _, _, press in panel.commands.values()
@@ -83,6 +91,10 @@ class PanelPressMapTest(unittest.TestCase):
                 expected[("E01C", (1, 99), (long, 255))] = (page, button, "long_press")
         for button, level in enumerate((10, 11, 12, 13), 1):
             expected[("0031", (1, 3), (1, level, 0, 0))] = (3, button, "single_press")
+        for (page, button), level in zip(
+            ((1, 8), (2, 1), (2, 2), (2, 3), (2, 4)), range(14, 19)
+        ):
+            expected[("0031", (1, 3), (1, level, 0, 0))] = (page, button, "single_press")
         self.assertEqual(panel.commands, expected)
         cases = (
             ("0031", (1, 3), [4, 100, 0, 0, 1], (1, 1, "single_press")),
@@ -91,6 +103,11 @@ class PanelPressMapTest(unittest.TestCase):
             ("E01C", (1, 99), [19, 255, 0, 0, 6], (2, 6, "long_press")),
             ("0031", (1, 3), [1, 12, 0, 0, 3], (3, 3, "single_press")),
             ("E01C", (1, 99), [23, 255, 0, 0, 8], (3, 8, "long_press")),
+            ("0031", (1, 3), [1, 14, 0, 0, 2], (1, 8, "single_press")),
+            ("0031", (1, 3), [1, 15, 0, 0, 1], (2, 1, "single_press")),
+            ("0031", (1, 3), [1, 16, 0, 0, 2], (2, 2, "single_press")),
+            ("0031", (1, 3), [1, 17, 0, 0, 3], (2, 3, "single_press")),
+            ("0031", (1, 3), [1, 18, 0, 0, 4], (2, 4, "single_press")),
         )
         for code, target, payload, expected in cases:
             with self.subTest(expected=expected, payload=payload):
@@ -106,7 +123,13 @@ class PanelPressMapTest(unittest.TestCase):
         self.assertIsNone(panel.match(telegram("E01C", (1, 99), [20, 255, 1, 0, 5])))
         self.assertIsNone(panel.match(telegram("E01C", (1, 99), [20, 255, 0, 0, 5, 1])))
         new_panel = load_press_mappings(SITE_MAP, CATALOG)["1.12"]
-        self.assertIsNone(new_panel.match(telegram("0031", (1, 3), [1, 0, 0, 0, 8])))
+        for last_byte in range(1, 9):
+            # All five Single ON/OFF keys share this OFF payload.
+            self.assertIsNone(new_panel.match(
+                telegram("0031", (1, 3), [1, 0, 0, 0, last_byte])
+            ))
+        self.assertIsNone(new_panel.match(telegram("0031", (1, 3), [1, 19, 0, 0, 1])))
+        self.assertIsNone(new_panel.match(telegram("0031", (1, 4), [1, 14, 0, 0, 8])))
         self.assertIsNone(new_panel.match(telegram("0031", (1, 3), [1, 11, 0, 1, 2])))
         self.assertIsNone(new_panel.match(telegram("E01C", (1, 99), [20, 0, 0, 0, 5])))
         # The last byte is not treated as a page/key marker without evidence.
