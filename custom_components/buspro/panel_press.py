@@ -2,7 +2,8 @@
 
 Buspro control telegrams contain a source and a target command, but no button
 number or press kind. A configured, unambiguous target command can identify a
-candidate physical press; timing and trailing command bytes are not identities.
+candidate physical press. Verified five-byte commands can distinguish MPL8
+zero-level presses that otherwise share a four-byte command prefix.
 """
 
 from __future__ import annotations
@@ -80,6 +81,17 @@ class PanelPressMap:
                     return None
             elif code_hex == "0031":
                 if len(payload) == 5:
+                    exact = self.commands.get((code_hex, target, payload))
+                    if exact is not None:
+                        return exact
+                    if any(
+                        mapped_code == code_hex
+                        and mapped_target == target
+                        and len(mapped_payload) == 5
+                        and mapped_payload[:4] == payload[:4]
+                        for mapped_code, mapped_target, mapped_payload in self.commands
+                    ):
+                        return None
                     payload = payload[:4]
                 elif len(payload) != 4:
                     return None
@@ -88,8 +100,8 @@ class PanelPressMap:
                     return None
             else:
                 return None
-            # The fifth byte's meaning is not verified. A command is a press
-            # only if its source panel and configured target are unambiguous.
+            # Legacy four-byte commands also match five-byte telegrams when
+            # no more specific five-byte command is configured.
             return self.commands.get((code_hex, target, payload))
         except (TypeError, ValueError):
             return None
@@ -136,9 +148,8 @@ def parse_press_mappings(data: dict, catalog: dict) -> dict[str, PanelPressMap]:
                 raise ValueError(f"Invalid press kind at {source}: {press!r}")
             if not isinstance(code, str) or code not in CONTROL_CODES:
                 raise ValueError(f"Invalid control code at {source}: {code!r}")
-            if not isinstance(payload, list) or len(payload) != (
-                4 if code == "0031" else 2
-            ):
+            lengths = (4, 5) if code == "0031" else (2,)
+            if not isinstance(payload, list) or len(payload) not in lengths:
                 raise ValueError(f"Invalid {code} payload at {source}")
             signature = (code, target, tuple(_byte(value) for value in payload))
             if signature in commands:

@@ -265,7 +265,7 @@ class PanelEventTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(len(actions[0].events), 6)
 
-    async def test_s121_new_keys_have_stable_entities_and_ignore_shared_off(self):
+    async def test_s121_dummy_keys_have_stable_entities_and_distinct_on_off(self):
         self.event._channel_entity = lambda *_: None
         self.entry.options["managed_devices"] = [{
             "address": "1.12", "name": "ENTRY",
@@ -277,31 +277,56 @@ class PanelEventTest(unittest.IsolatedAsyncioTestCase):
             for item in entities
             if isinstance(item, self.event.BusproPanelButtonEvent)
         }
-        for (page, button), (name, level) in {
-            (1, 8): ("Master", 14),
-            (2, 1): ("HA 2.1", 15),
-            (2, 2): ("HA 2.2", 16),
-            (2, 3): ("HA 2.3", 17),
-            (2, 4): ("HA 2.4", 18),
-        }.items():
+        dummy_buttons = {
+            (1, 8): ("Master", 14, 8),
+            (2, 1): ("HA 2.1", 15, 9),
+            (2, 2): ("HA 2.2", 16, 10),
+            (2, 3): ("HA 2.3", 17, 11),
+            (2, 4): ("HA 2.4", 18, 12),
+            (3, 1): ("Led corridor", 10, 17),
+            (3, 2): ("Stairs light", 11, 18),
+            (3, 3): ("Spots 2nd Floor", 12, 19),
+            (3, 4): ("Wall 2nd Floor", 13, 20),
+        }
+
+        def receive(source, target, payload, code):
+            self.buspro.receive(SimpleNamespace(
+                source_address=source, target_address=target,
+                payload=payload, operate_code=code,
+            ))
+
+        for (page, button), (name, level, key_id) in dummy_buttons.items():
             with self.subTest(page=page, button=button):
                 entity = buttons[page, button]
                 self.assertEqual(entity._attr_name, f"Page {page} {name}")
                 self.assertEqual(entity._attr_unique_id,
                                  f"buspro-1.12-page-{page}-button-{button}")
                 self.assertEqual(entity._attr_event_types, ["single_press"])
-                for payload in ([1, level, 0, 0, button], [1, 0, 0, 0, button]):
-                    self.buspro.receive(SimpleNamespace(
-                        source_address=(1, 12), target_address=(1, 3),
-                        payload=payload,
-                        operate_code=self.OperateCode.SingleChannelControl,
-                    ))
+                for payload in ([1, level, 0, 0, key_id],
+                                [1, 0, 0, 0, key_id]):
+                    receive((1, 12), (1, 3), payload,
+                            self.OperateCode.SingleChannelControl)
                 self.assertEqual([kind for kind, _ in entity.events],
-                                 ["single_press"])
+                                 ["single_press", "single_press"])
                 self.assertEqual(entity.events[0][1]["raw_payload"],
-                                 [1, level, 0, 0, button])
-        for page_button in ((1, 8), (2, 1), (2, 2), (2, 3), (2, 4)):
-            self.assertEqual(len(buttons[page_button].events), 1)
+                                 [1, level, 0, 0, key_id])
+                self.assertEqual(entity.events[1][1]["raw_payload"],
+                                 [1, 0, 0, 0, key_id])
+        for source, target, payload, code in (
+            ((1, 13), (1, 12), [1, 0, 0, 0, 8],
+             self.OperateCode.SingleChannelControl),
+            ((1, 12), (1, 4), [1, 0, 0, 0, 8],
+             self.OperateCode.SingleChannelControl),
+            ((1, 12), (1, 3), [1, 0, 0, 0, 8],
+             self.OperateCode.ReadStatusOfChannels),
+            ((1, 12), (1, 3), [1, 0, 0, 1, 8],
+             self.OperateCode.SingleChannelControl),
+            ((1, 12), (1, 3), [1, 0, 0, 0, 13],
+             self.OperateCode.SingleChannelControl),
+        ):
+            receive(source, target, payload, code)
+        for page_button in dummy_buttons:
+            self.assertEqual(len(buttons[page_button].events), 2)
 
     async def test_seven_panels_expose_nine_mapped_buttons_and_actions(self):
         self.entry.options["managed_devices"] = [

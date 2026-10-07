@@ -33,7 +33,7 @@ class PanelPressMapTest(unittest.TestCase):
         self.assertEqual(
             set(maps), {"1.4", "1.5", "1.6", "1.7", "1.8", "1.10", "1.11", "1.12"}
         )
-        self.assertEqual(sum(len(item.commands) for item in maps.values()), 57)
+        self.assertEqual(sum(len(item.commands) for item in maps.values()), 66)
         self.assertEqual(maps["1.5"].commands, {})
         self.assertEqual(maps["1.6"].event_types_for_button(1, 5),
                          ("single_press", "long_press"))
@@ -89,13 +89,26 @@ class PanelPressMapTest(unittest.TestCase):
             for button, (short, long) in enumerate(switches, 5):
                 expected[("E01C", (1, 99), (short, 255))] = (page, button, "single_press")
                 expected[("E01C", (1, 99), (long, 255))] = (page, button, "long_press")
-        for button, level in enumerate((10, 11, 12, 13), 1):
-            expected[("0031", (1, 3), (1, level, 0, 0))] = (3, button, "single_press")
-        for (page, button), level in zip(
-            ((1, 8), (2, 1), (2, 2), (2, 3), (2, 4)), range(14, 19)
-        ):
+        dummy_buttons = (
+            (1, 8, 14, 8),
+            (2, 1, 15, 9), (2, 2, 16, 10),
+            (2, 3, 17, 11), (2, 4, 18, 12),
+            (3, 1, 10, 17), (3, 2, 11, 18),
+            (3, 3, 12, 19), (3, 4, 13, 20),
+        )
+        for page, button, level, key_id in dummy_buttons:
             expected[("0031", (1, 3), (1, level, 0, 0))] = (page, button, "single_press")
+            expected[("0031", (1, 3), (1, 0, 0, 0, key_id))] = (
+                page, button, "single_press"
+            )
         self.assertEqual(panel.commands, expected)
+        for page, button, level, key_id in dummy_buttons:
+            with self.subTest(page=page, button=button):
+                for payload in ([1, level, 0, 0, key_id], [1, 0, 0, 0, key_id]):
+                    self.assertEqual(
+                        panel.match(telegram("0031", (1, 3), payload)),
+                        (page, button, "single_press"),
+                    )
         cases = (
             ("0031", (1, 3), [4, 100, 0, 0, 1], (1, 1, "single_press")),
             ("0031", (1, 3), [4, 0, 0, 0, 1], (1, 1, "single_press")),
@@ -103,11 +116,11 @@ class PanelPressMapTest(unittest.TestCase):
             ("E01C", (1, 99), [19, 255, 0, 0, 6], (2, 6, "long_press")),
             ("0031", (1, 3), [1, 12, 0, 0, 3], (3, 3, "single_press")),
             ("E01C", (1, 99), [23, 255, 0, 0, 8], (3, 8, "long_press")),
-            ("0031", (1, 3), [1, 14, 0, 0, 2], (1, 8, "single_press")),
-            ("0031", (1, 3), [1, 15, 0, 0, 1], (2, 1, "single_press")),
-            ("0031", (1, 3), [1, 16, 0, 0, 2], (2, 2, "single_press")),
-            ("0031", (1, 3), [1, 17, 0, 0, 3], (2, 3, "single_press")),
-            ("0031", (1, 3), [1, 18, 0, 0, 4], (2, 4, "single_press")),
+            ("0031", (1, 3), [1, 14, 0, 0, 8], (1, 8, "single_press")),
+            ("0031", (1, 3), [1, 15, 0, 0, 9], (2, 1, "single_press")),
+            ("0031", (1, 3), [1, 16, 0, 0, 10], (2, 2, "single_press")),
+            ("0031", (1, 3), [1, 17, 0, 0, 11], (2, 3, "single_press")),
+            ("0031", (1, 3), [1, 18, 0, 0, 12], (2, 4, "single_press")),
         )
         for code, target, payload, expected in cases:
             with self.subTest(expected=expected, payload=payload):
@@ -123,16 +136,20 @@ class PanelPressMapTest(unittest.TestCase):
         self.assertIsNone(panel.match(telegram("E01C", (1, 99), [20, 255, 1, 0, 5])))
         self.assertIsNone(panel.match(telegram("E01C", (1, 99), [20, 255, 0, 0, 5, 1])))
         new_panel = load_press_mappings(SITE_MAP, CATALOG)["1.12"]
-        for last_byte in range(1, 9):
-            # All five Single ON/OFF keys share this OFF payload.
+        for last_byte in (0, 1, 7, 13, 16, 21, 255):
             self.assertIsNone(new_panel.match(
                 telegram("0031", (1, 3), [1, 0, 0, 0, last_byte])
             ))
+        self.assertIsNone(new_panel.match(telegram("0031", (1, 3), [1, 0, 0, 0])))
+        self.assertIsNone(new_panel.match(telegram("0033", (1, 3), [1, 0, 0, 0, 8])))
+        self.assertIsNone(new_panel.match(telegram("0031", (1, 3), [1, 0, 0, 1, 8])))
+        self.assertIsNone(new_panel.match(telegram("0031", (1, 3), [1, 0, 1, 0, 8])))
+        self.assertIsNone(new_panel.match(telegram("0031", (1, 4), [1, 0, 0, 0, 8])))
         self.assertIsNone(new_panel.match(telegram("0031", (1, 3), [1, 19, 0, 0, 1])))
         self.assertIsNone(new_panel.match(telegram("0031", (1, 4), [1, 14, 0, 0, 8])))
         self.assertIsNone(new_panel.match(telegram("0031", (1, 3), [1, 11, 0, 1, 2])))
         self.assertIsNone(new_panel.match(telegram("E01C", (1, 99), [20, 0, 0, 0, 5])))
-        # The last byte is not treated as a page/key marker without evidence.
+        # Unverified trailing bytes on MP8B universal-switch commands stay ignored.
         self.assertEqual(panel.match(telegram("E01C", (1, 99), [20, 255, 0, 0, 6])),
                          (1, 5, "single_press"))
 
@@ -176,6 +193,30 @@ class PanelPressMapTest(unittest.TestCase):
             ),
             (1, 5, "single_press"),
         )
+        specific = copy.deepcopy(legacy)
+        specific["panels"]["1.6"]["actions"][0]["payload"] = [1, 0, 0, 0]
+        specific["panels"]["1.6"]["actions"].append(
+            {**specific["panels"]["1.6"]["actions"][0],
+             "button": 6, "payload": [1, 0, 0, 0, 9]}
+        )
+        specific_panel = parse_press_mappings(specific, CATALOG)["1.6"]
+        self.assertEqual(
+            specific_panel.match(telegram("0031", (1, 99), [1, 0, 0, 0, 9])),
+            (1, 6, "single_press"),
+        )
+        self.assertIsNone(
+            specific_panel.match(telegram("0031", (1, 99), [1, 0, 0, 0, 10]))
+        )
+        self.assertEqual(
+            specific_panel.match(telegram("0031", (1, 99), [1, 0, 0, 0])),
+            (1, 5, "single_press"),
+        )
+        duplicate_five = copy.deepcopy(specific)
+        duplicate_five["panels"]["1.6"]["actions"].append(
+            {**specific["panels"]["1.6"]["actions"][1], "button": 7}
+        )
+        with self.assertRaises(ValueError):
+            parse_press_mappings(duplicate_five, CATALOG)
 
         for changed in (
             {"button": 9}, {"press": "double"}, {"target_address": "1.999"},
