@@ -155,7 +155,9 @@ async def async_setup_platform(hass, config, async_add_entites, discovery_info=N
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up sensors generated from physical Buspro devices."""
-    from .event import BusproPanelLastActionSensor, panel_definitions
+    from .event import (
+        BusproPanelLastActionSensor, BusproPanelLastTelegramSensor, panel_definitions,
+    )
 
     module = hass.data[DATA_BUSPRO_CONFIG]["entry_modules"][config_entry.entry_id]
     entities = _compound_sensor_entities(hass, module)
@@ -166,6 +168,11 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         hass, config_entry
     ).items():
         device_address = tuple(int(part) for part in address.split("."))
+        entities.append(
+            BusproPanelLastTelegramSensor(
+                module.hdl, device_address, address, device_info,
+            )
+        )
         entities.append(
             BusproPanelLastActionSensor(
                 hass,
@@ -422,6 +429,8 @@ def _managed_sensor_entities(hass, module, config_entry):
         if device_config[CONF_DEVICE_TYPE] != DEVICE_TYPE_MULTISENSOR:
             continue
         spec = DEVICE_CATALOG[device_config["model"]]
+        if not spec.get("capabilities"):
+            continue
         address = parse_device_address(device_config["address"])
         sensor = module.get_sensor(
             address,

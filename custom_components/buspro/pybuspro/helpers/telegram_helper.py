@@ -48,6 +48,7 @@ class TelegramHelper:
             telegram.udp_data = data
             telegram.source_address = (source_subnet_id, source_device_id)
             telegram.operate_code = generics.get_enum_value(OperateCode, operate_code_hex)
+            telegram.operate_code_bytes = bytes(operate_code_hex)
             telegram.target_address = (target_subnet_id, target_device_id)
             telegram.udp_address = address
             telegram.payload = generics.hex_to_integer_list(content)

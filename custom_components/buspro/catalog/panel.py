@@ -12,6 +12,20 @@ _PANEL_TEMPERATURE_ONLY = {
 
 
 PANEL_MODELS = {
+    "HDL-MP8B.46-A": {
+        "device_type": DEVICE_TYPE_MULTISENSOR,
+        "capabilities": (),
+        "panel_actions": True,
+        "button_count": 8,
+    },
+    "HDL-MPL8.46-A": {
+        "device_type": DEVICE_TYPE_MULTISENSOR,
+        # S121 has no enabled temperature broadcast or validated polling path.
+        "capabilities": (),
+        "panel_actions": True,
+        "button_count": 8,
+        "page_count": 4,
+    },
     "HDL-MPTL3C.48": {
         **_PANEL_TEMPERATURE_ONLY,
     },

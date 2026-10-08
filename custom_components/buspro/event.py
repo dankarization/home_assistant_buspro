@@ -1,7 +1,12 @@
 """Event entities for HDL Buspro button panels."""
 
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
 from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.const import EntityCategory
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import CONF_MANAGED_DEVICES, DATA_BUSPRO_CONFIG, DOMAIN
@@ -13,6 +18,9 @@ from .helpers.logic_controller import (
     logic_controller_definitions,
 )
 from .pybuspro.helpers.enums import OperateCode
+from .panel_press import load_press_mappings
+
+_LOGGER = logging.getLogger(__name__)
 
 EVENT_ON = "on"
 EVENT_OFF = "off"
@@ -23,6 +31,38 @@ EVENT_SCENE = "scene"
 EVENT_UNIVERSAL_SWITCH_ON = "universal_switch_on"
 EVENT_UNIVERSAL_SWITCH_OFF = "universal_switch_off"
 EVENT_LOGIC_TELEGRAM = "telegram"
+MAX_DIAGNOSTIC_PAYLOAD = 64
+
+
+def _panel_telegram_attributes(telegram, device_address):
+    """Bounded parsed fields only; never expose UDP endpoints or raw frames."""
+    if tuple(telegram.source_address or ()) != device_address:
+        return None
+    target = telegram.target_address
+    payload = telegram.payload
+    if (
+        not isinstance(target, (tuple, list)) or len(target) != 2
+        or not all(type(value) is int and 0 <= value <= 255 for value in target)
+        or not isinstance(payload, (tuple, list))
+        or not all(type(value) is int and 0 <= value <= 255 for value in payload)
+    ):
+        return None
+    code = telegram.operate_code
+    raw_code = getattr(telegram, "operate_code_bytes", None)
+    if raw_code is None:
+        raw_code = getattr(code, "value", None)
+    if not isinstance(raw_code, bytes) or len(raw_code) != 2:
+        return None
+    return {
+        "observed_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        "source_address": ".".join(map(str, device_address)),
+        "target_address": ".".join(map(str, target)),
+        "operate_code": getattr(code, "name", "unknown"),
+        "operate_code_hex": raw_code.hex().upper(),
+        "raw_payload": list(payload[:MAX_DIAGNOSTIC_PAYLOAD]),
+        "payload_length": len(payload),
+        "payload_truncated": len(payload) > MAX_DIAGNOSTIC_PAYLOAD,
+    }
 
 
 def _channel_entity(hass, target_address, channel):
@@ -156,9 +196,32 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up button events for supported catalog and UI-managed panels."""
     module = hass.data[DATA_BUSPRO_CONFIG]["entry_modules"][config_entry.entry_id]
     panels = panel_definitions(hass, config_entry)
+    try:
+        press_mappings = await hass.async_add_executor_job(
+            load_press_mappings,
+            Path(__file__).with_name("panel_press_mappings.json"),
+            DEVICE_CATALOG,
+        )
+    except (OSError, ValueError) as err:
+        _LOGGER.error("Panel press mappings are invalid; no mapped presses will fire: %s", err)
+        press_mappings = {}
+
     entities = []
     for address, (name, button_count, device_info) in panels.items():
         device_address = tuple(int(part) for part in address.split("."))
+        model = device_info.get("model")
+        uses_press_map = model in {"HDL-MP8B.46-A", "HDL-MPL8.46-A"}
+        press_map = press_mappings.get(address) if uses_press_map else None
+        if press_map is not None and press_map.model != device_info.get("model"):
+            _LOGGER.warning("Ignoring panel press map for %s: model mismatch", address)
+            press_map = None
+        # Mapped models expose only configured, distinguishable page/key pairs.
+        # Unmapped legacy panel behavior and existing entity IDs remain intact.
+        if uses_press_map:
+            buttons = press_map.buttons() if press_map is not None else ()
+        else:
+            buttons = ((1, number) for number in range(1, button_count + 1))
+        paged = DEVICE_CATALOG.get(model, {}).get("page_count", 1) > 1
         entities.extend(
             BusproPanelButtonEvent(
                 module.hdl,
@@ -167,8 +230,11 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 name,
                 button_number,
                 device_info,
+                press_map=press_map,
+                page=page,
+                paged=paged,
             )
-            for button_number in range(1, button_count + 1)
+            for page, button_number in buttons
         )
         entities.append(
             BusproPanelActionEvent(
@@ -178,6 +244,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 address,
                 device_info,
             )
+        )
+        entities.append(
+            BusproPanelTelegramEvent(module.hdl, device_address, address, device_info)
         )
 
     for address, device_info in logic_controller_definitions(
@@ -284,7 +353,7 @@ def panel_definitions(hass, config_entry):
 
 
 class BusproPanelButtonEvent(EventEntity):
-    """A panel key configured as a Buspro Universal Switch command."""
+    """A panel key with a configured, distinguishable target command."""
 
     _attr_device_class = EventDeviceClass.BUTTON
     _attr_event_types = [EVENT_ON, EVENT_OFF]
@@ -299,18 +368,37 @@ class BusproPanelButtonEvent(EventEntity):
         device_name,
         button_number,
         device_info,
+        press_map=None,
+        page=1,
+        paged=False,
     ):
         self._buspro = buspro
         self._device_address = device_address
         self._button_number = button_number
+        self._page = page
+        self._paged = paged
+        self._press_map = press_map
+        if press_map is not None:
+            self._attr_event_types = list(
+                press_map.event_types_for_button(page, button_number)
+            )
         self._telegram_cb = self._handle_telegram
-        self._attr_name = f"Button {button_number}"
-        self._attr_unique_id = f"{DOMAIN}-{address}-button-{button_number}"
+        label = (
+            press_map.name_for_button(page, button_number)
+            if press_map is not None else f"Button {button_number}"
+        )
+        self._attr_name = f"Page {page} {label}" if paged else label
+        self._attr_unique_id = (
+            f"{DOMAIN}-{address}-page-{page}-button-{button_number}"
+            if paged else f"{DOMAIN}-{address}-button-{button_number}"
+        )
         self._attr_device_info = device_info
         self._attr_extra_state_attributes = {
             "button_number": button_number,
             "panel_name": device_name,
         }
+        if paged:
+            self._attr_extra_state_attributes["page"] = page
 
     async def async_added_to_hass(self):
         """Subscribe to telegrams involving this physical panel."""
@@ -327,10 +415,30 @@ class BusproPanelButtonEvent(EventEntity):
         await super().async_will_remove_from_hass()
 
     def _handle_telegram(self, telegram):
+        if tuple(telegram.source_address or ()) != self._device_address:
+            return
+        if self._press_map is not None:
+            match = self._press_map.match(telegram)
+            if match is None or match[:2] != (self._page, self._button_number):
+                return
+            press_type = match[2]
+            self._trigger_event(
+                press_type,
+                {
+                    "button_number": self._button_number,
+                    **({"page": self._page} if self._paged else {}),
+                    "press_type": press_type,
+                    "source_address": list(self._device_address),
+                    "target_address": list(telegram.target_address or ()),
+                    "raw_payload": list(telegram.payload or ()),
+                },
+            )
+            self.async_write_ha_state()
+            return
+
         payload = telegram.payload or []
         if (
-            tuple(telegram.source_address or ()) != self._device_address
-            or telegram.operate_code != OperateCode.UniversalSwitchControl
+            telegram.operate_code != OperateCode.UniversalSwitchControl
             or len(payload) < 2
             or payload[0] != self._button_number
         ):
@@ -395,6 +503,78 @@ class BusproPanelActionEvent(EventEntity):
             return
         event_type, attributes = decoded
         self._trigger_event(event_type, attributes)
+        self.async_write_ha_state()
+
+
+class BusproPanelTelegramEvent(EventEntity):
+    """Every parsed telegram whose sender is this panel, without action decoding."""
+
+    _attr_event_types = [EVENT_LOGIC_TELEGRAM]
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = True
+    _attr_name = "Telegram"
+    _attr_should_poll = False
+
+    def __init__(self, buspro, device_address, address, device_info):
+        self._buspro = buspro
+        self._device_address = device_address
+        self._telegram_cb = self._handle_telegram
+        self._attr_unique_id = f"{DOMAIN}-{address}-telegram"
+        self._attr_device_info = device_info
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._buspro.register_telegram_received_device_cb(
+            self._telegram_cb, self._device_address
+        )
+
+    async def async_will_remove_from_hass(self):
+        self._buspro.unregister_telegram_received_device_cb(
+            self._telegram_cb, self._device_address
+        )
+        await super().async_will_remove_from_hass()
+
+    def _handle_telegram(self, telegram):
+        attributes = _panel_telegram_attributes(telegram, self._device_address)
+        if attributes is None:
+            return
+        self._trigger_event(EVENT_LOGIC_TELEGRAM, attributes)
+        self.async_write_ha_state()
+
+
+class BusproPanelLastTelegramSensor(SensorEntity):
+    """Timestamp and bounded fields of the latest parsed panel telegram."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = True
+    _attr_name = "Last telegram"
+    _attr_should_poll = False
+
+    def __init__(self, buspro, device_address, address, device_info):
+        self._buspro = buspro
+        self._device_address = device_address
+        self._telegram_cb = self._handle_telegram
+        self._attr_unique_id = f"{DOMAIN}-{address}-last-telegram"
+        self._attr_device_info = device_info
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self._buspro.register_telegram_received_device_cb(
+            self._telegram_cb, self._device_address
+        )
+
+    async def async_will_remove_from_hass(self):
+        self._buspro.unregister_telegram_received_device_cb(
+            self._telegram_cb, self._device_address
+        )
+        await super().async_will_remove_from_hass()
+
+    def _handle_telegram(self, telegram):
+        attributes = _panel_telegram_attributes(telegram, self._device_address)
+        if attributes is None:
+            return
+        self._attr_native_value = attributes.pop("observed_at")
+        self._attr_extra_state_attributes = attributes
         self.async_write_ha_state()
 
 
